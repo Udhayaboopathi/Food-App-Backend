@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./database.db"
     
     # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:3001"]
+    CORS_ORIGINS: List[str] = ["https://udhayaboopathi-food-app-frontend-zq.vercel.app", "http://localhost:3001"]
     
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
