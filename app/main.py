@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from pathlib import Path
+import os
 
 from .core.config import settings
 from .core.database import create_db_and_tables
@@ -20,14 +21,19 @@ async def lifespan(app: FastAPI):
     Creates database tables on startup
     """
     print("🚀 Starting EatUpNow API...")
-    create_db_and_tables()
     
-    # Create uploads directory
-    uploads_dir = Path("uploads")
-    uploads_dir.mkdir(exist_ok=True)
-    print("📁 Uploads directory ready")
+    # Only create database in non-serverless environments
+    if os.getenv("VERCEL") != "1":
+        create_db_and_tables()
+        
+        # Create uploads directory
+        uploads_dir = Path("uploads")
+        uploads_dir.mkdir(exist_ok=True)
+        print("📁 Uploads directory ready")
+        print("✅ Database initialized")
+    else:
+        print("⚡ Running in Vercel serverless mode")
     
-    print("✅ Database initialized")
     yield
     print("👋 Shutting down EatUpNow API")
 
@@ -62,8 +68,9 @@ app.include_router(upload.router)
 app.include_router(owner.router)
 app.include_router(admin.router)
 
-# Mount static files for uploaded images
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# Mount static files for uploaded images (only in non-serverless mode)
+if os.getenv("VERCEL") != "1":
+    app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
 @app.get("/")
