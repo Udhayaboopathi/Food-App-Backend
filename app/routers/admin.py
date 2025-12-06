@@ -124,3 +124,46 @@ def get_all_restaurants(
     
     restaurants = session.exec(select(Restaurant)).all()
     return restaurants
+
+
+@router.delete("/users/{user_id}")
+def delete_user(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """Delete a user (admin only)"""
+    verify_admin(current_user)
+    
+    user = session.get(User, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Prevent deleting admin users
+    if user.role == "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot delete admin users"
+        )
+    
+    # Prevent deleting yourself
+    if user.id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot delete your own account"
+        )
+    
+    # If user owns a restaurant, remove ownership
+    if user.restaurant_id:
+        restaurant = session.get(Restaurant, user.restaurant_id)
+        if restaurant and restaurant.owner_id == user_id:
+            restaurant.owner_id = None
+            session.add(restaurant)
+    
+    session.delete(user)
+    session.commit()
+    
+    return {"message": f"User {user.email} deleted successfully"}
