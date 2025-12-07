@@ -10,7 +10,7 @@ from pathlib import Path
 import os
 
 from .core.config import settings
-from .core.database import connect_to_mongo, close_mongo_connection
+from .core.database import connect_to_mongo, close_mongo_connection, is_db_connected
 from .routers import auth, restaurants, menu, orders, upload, admin, owner
 
 
@@ -96,4 +96,15 @@ def health_check():
         "status": "healthy",
         "service": "EatUpNow API",
         "version": settings.APP_VERSION
+    }
+
+
+@app.get("/db-check")
+def database_check():
+    """Database connection status endpoint"""
+    db_connected = is_db_connected()
+    return {
+        "mongo_connected": db_connected,
+        "status": "connected" if db_connected else "disconnected",
+        "message": "MongoDB is operational" if db_connected else "MongoDB connection failed - check environment variables"
     }

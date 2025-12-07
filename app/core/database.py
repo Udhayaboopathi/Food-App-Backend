@@ -7,13 +7,14 @@ from beanie import init_beanie
 from .config import settings
 import asyncio
 
-# MongoDB client
+# MongoDB client and initialization flag
 mongodb_client: AsyncIOMotorClient = None
+db_initialized: bool = False
 
 
 async def connect_to_mongo():
     """Initialize MongoDB connection"""
-    global mongodb_client
+    global mongodb_client, db_initialized
     
     try:
         # Create MongoDB client with connection settings
@@ -47,21 +48,33 @@ async def connect_to_mongo():
                 DeliveryAgent
             ]
         )
+        
+        db_initialized = True
         print("✅ MongoDB connected successfully")
+        return True
         
     except Exception as e:
+        db_initialized = False
         print(f"❌ MongoDB connection failed: {e}")
-        print("⚠️  Please check your MONGODB_URI in .env file")
+        print("⚠️  Please check your MONGODB_URI in environment variables")
         # Don't raise the exception to allow the app to start
         # The app will work without MongoDB (some endpoints will fail)
+        return False
 
 
 async def close_mongo_connection():
     """Close MongoDB connection"""
-    global mongodb_client
+    global mongodb_client, db_initialized
     if mongodb_client:
         mongodb_client.close()
+        db_initialized = False
         print("✅ MongoDB connection closed")
+
+
+def is_db_connected():
+    """Check if database is connected and initialized"""
+    global db_initialized
+    return db_initialized
 
 
 # Compatibility function for old code
