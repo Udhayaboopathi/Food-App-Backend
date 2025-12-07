@@ -4,8 +4,5 @@ __pycache__/
 .env
 .git/
 uploads/
-.gitignore
-README.md
 main.py
-VERCEL_DEPLOYMENT.md
-.env.example
+README.md

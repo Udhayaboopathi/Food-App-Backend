@@ -1,13 +1,28 @@
 """
-Vercel serverless function entry point
+Vercel serverless function entry point for FastAPI
 """
 import sys
-import os
+from pathlib import Path
 
-# Add the parent directory to the Python path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Get the project root directory (parent of 'api' folder)
+project_root = Path(__file__).parent.parent.resolve()
 
-from app.main import app
+# Add project root to Python path if not already there
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
-# Export the FastAPI app for Vercel
-handler = app
+# Import FastAPI app
+try:
+    from app.main import app
+except ImportError as e:
+    # Debugging: Print the error and sys.path
+    print(f"Import Error: {e}")
+    print(f"sys.path: {sys.path}")
+    print(f"project_root: {project_root}")
+    print(f"Files in project_root: {list(project_root.iterdir())}")
+    raise
+
+# Vercel requires the ASGI app to be named 'app' or exposed directly
+# This is the entry point for Vercel's Python runtime
+
+
