@@ -1,15 +1,21 @@
 """
 Vercel serverless function entry point for FastAPI
-This file re-exports the FastAPI app from app.main
 """
+import sys
+import os
 
-# For Vercel, we need to make the app module accessible
-# The trick is that Vercel deploys everything in the project root
-# So we import directly from app.main
+# Add the api directory to Python path
+# This allows us to import from api.app.main
+api_dir = os.path.dirname(os.path.abspath(__file__))
+if api_dir not in sys.path:
+    sys.path.insert(0, api_dir)
+
+# Now import from app.main (which is api/app/main.py)
 from app.main import app
 
-# Vercel's Python runtime expects the ASGI application to be named 'app'
-# or accessible as a module-level variable
+# Vercel will use this 'app' variable as the ASGI application
+
+
 
 
 
