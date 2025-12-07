@@ -1,0 +1,11 @@
+env/
+__pycache__/
+*.pyc
+.env
+.git/
+uploads/
+.gitignore
+README.md
+main.py
+VERCEL_DEPLOYMENT.md
+.env.example

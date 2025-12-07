@@ -22,23 +22,23 @@ async def lifespan(app: FastAPI):
     """
     print("🚀 Starting EatUpNow API...")
     
-    # Connect to MongoDB
+    # Connect to MongoDB (works for both local and Vercel)
+    await connect_to_mongo()
+    
+    # Create uploads directory (only for local)
     if os.getenv("VERCEL") != "1":
-        await connect_to_mongo()
-        
-        # Create uploads directory
         uploads_dir = Path("uploads")
         uploads_dir.mkdir(exist_ok=True)
         print("📁 Uploads directory ready")
     else:
         print("⚡ Running in Vercel serverless mode")
-        await connect_to_mongo()
     
     yield
     
     # Close MongoDB connection
-    await close_mongo_connection()
-    print("👋 Shutting down EatUpNow API")
+    if os.getenv("VERCEL") != "1":
+        await close_mongo_connection()
+        print("👋 Shutting down EatUpNow API")
 
 
 # Create FastAPI app

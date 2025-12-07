@@ -17,12 +17,19 @@ async def connect_to_mongo():
     global mongodb_client, db_initialized
     
     try:
+        print("🔌 Connecting to MongoDB...")
+        
         # Create MongoDB client with connection settings
+        # Use shorter timeout for Vercel serverless
+        import os
+        timeout_ms = 3000 if os.getenv("VERCEL") == "1" else 5000
+        
         mongodb_client = AsyncIOMotorClient(
             settings.MONGODB_URI,
-            serverSelectionTimeoutMS=5000,  # 5 second timeout
-            connectTimeoutMS=10000,
-            socketTimeoutMS=10000
+            serverSelectionTimeoutMS=timeout_ms,
+            connectTimeoutMS=5000,
+            socketTimeoutMS=5000,
+            maxPoolSize=1  # Limit connections for serverless
         )
         
         # Test the connection
@@ -56,6 +63,7 @@ async def connect_to_mongo():
     except Exception as e:
         db_initialized = False
         print(f"❌ MongoDB connection failed: {e}")
+        print(f"⚠️  Error type: {type(e).__name__}")
         print("⚠️  Please check your MONGODB_URI in environment variables")
         # Don't raise the exception to allow the app to start
         # The app will work without MongoDB (some endpoints will fail)
