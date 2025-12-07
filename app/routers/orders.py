@@ -1,24 +1,24 @@
 """
-Orders router for order management
+Orders router for order management (MongoDB version)
 Handles order creation, tracking, and status updates
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session, select
 from typing import List
 from datetime import datetime
+from beanie import PydanticObjectId
 
-from ..core.database import get_session
-from ..models import Order, OrderItem, MenuItem, User
+from ..models.order import Order, OrderItemData
+from ..models.menu_item import MenuItem
+from ..models.user import User
 from ..schemas.order import OrderCreate, OrderResponse, OrderStatusUpdate
 from .auth import get_current_user
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
 
-@router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
-def create_order(
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_order(
     order_data: OrderCreate,
-    session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -26,7 +26,6 @@ def create_order(
     
     Args:
         order_data: Order information with items
-        session: Database session
         current_user: Current authenticated user
     
     Returns:
@@ -34,10 +33,16 @@ def create_order(
     """
     # Calculate total amount
     total_amount = 0.0
-    order_items_data = []
+    order_items_list = []
     
     for item in order_data.items:
-        menu_item = session.get(MenuItem, item.menu_item_id)
+        try:
+            menu_item = await MenuItem.get(PydanticObjectId(item.menu_item_id))
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Menu item {item.menu_item_id} not found"
+            )
         
         if not menu_item:
             raise HTTPException(
@@ -48,110 +53,135 @@ def create_order(
         if not menu_item.is_available:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Menu item '{menu_item.name}' is not available"
+                detail=f"Menu item {menu_item.name} is not available"
             )
         
         item_total = menu_item.price * item.quantity
         total_amount += item_total
         
-        order_items_data.append({
-            "menu_item_id": item.menu_item_id,
-            "quantity": item.quantity,
-            "price_at_purchase": menu_item.price
-        })
+        order_items_list.append(
+            OrderItemData(
+                menu_item_id=str(menu_item.id),
+                quantity=item.quantity,
+                price_at_purchase=menu_item.price
+            )
+        )
     
     # Create order
     new_order = Order(
-        user_id=current_user.id,
+        user_id=str(current_user.id),
         restaurant_id=order_data.restaurant_id,
-        total_amount=total_amount,
         delivery_address=order_data.delivery_address,
         payment_method=order_data.payment_method,
+        total_amount=total_amount,
+        items=order_items_list,
         status="pending"
     )
     
-    session.add(new_order)
-    session.commit()
-    session.refresh(new_order)
+    await new_order.insert()
     
-    # Create order items
-    for item_data in order_items_data:
-        order_item = OrderItem(order_id=new_order.id, **item_data)
-        session.add(order_item)
+    # Convert to dict with proper ID serialization
+    order_dict = new_order.model_dump(by_alias=False)
+    order_dict["id"] = str(new_order.id)
     
-    session.commit()
-    session.refresh(new_order)
-    
-    return new_order
+    return order_dict
 
 
-@router.get("", response_model=List[OrderResponse])
-def get_user_orders(
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user)
+@router.get("")
+async def get_user_orders(
+    current_user: User = Depends(get_current_user),
+    status: str = None
 ):
     """
-    Get all orders for current user
+    Get all orders for the current user
     
     Args:
-        session: Database session
         current_user: Current authenticated user
+        status: Filter by order status
     
     Returns:
-        List of user's orders
+        List of orders
     """
-    statement = select(Order).where(Order.user_id == current_user.id).order_by(Order.created_at.desc())
-    orders = session.exec(statement).all()
-    return orders
+    query = {"user_id": str(current_user.id)}
+    
+    if status:
+        query["status"] = status
+    
+    orders = await Order.find(query).sort(-Order.created_at).to_list()
+    
+    # Convert to dict with proper ID serialization
+    result = []
+    for order in orders:
+        order_dict = order.model_dump(by_alias=False)
+        order_dict["id"] = str(order.id)
+        result.append(order_dict)
+    
+    return result
 
 
-@router.get("/user/{user_id}", response_model=List[OrderResponse])
-def get_orders_by_user(
-    user_id: int,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user)
+@router.get("/user/{user_id}")
+async def get_orders_by_user(
+    user_id: str,
+    current_user: User = Depends(get_current_user),
+    status: str = None
 ):
     """
     Get all orders for a specific user (Admin only)
     
     Args:
         user_id: User ID to get orders for
-        session: Database session
         current_user: Current authenticated user
+        status: Filter by order status
     
     Returns:
-        List of user's orders
+        List of orders for the user
     """
-    # Only admin can access other users' orders
+    # Only admins can view other users' orders
     if current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can access other users' orders"
+            detail="Only admins can view other users' orders"
         )
     
-    statement = select(Order).where(Order.user_id == user_id).order_by(Order.created_at.desc())
-    orders = session.exec(statement).all()
-    return orders
+    query = {"user_id": user_id}
+    
+    if status:
+        query["status"] = status
+    
+    orders = await Order.find(query).sort(-Order.created_at).to_list()
+    
+    # Convert to dict with proper ID serialization
+    result = []
+    for order in orders:
+        order_dict = order.model_dump(by_alias=False)
+        order_dict["id"] = str(order.id)
+        result.append(order_dict)
+    
+    return result
 
 
 @router.get("/{order_id}", response_model=OrderResponse)
-def get_order(
-    order_id: int,
-    session: Session = Depends(get_session),
+async def get_order(
+    order_id: str,
     current_user: User = Depends(get_current_user)
 ):
     """
-    Get single order by ID
+    Get a single order by ID
     
     Args:
         order_id: Order ID
-        session: Database session
         current_user: Current authenticated user
     
     Returns:
         Order data
     """
-    order = session.get(Order, order_id)
+    try:
+        order = await Order.get(PydanticObjectId(order_id))
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Order not found"
+        )
     
     if not order:
         raise HTTPException(
@@ -159,43 +189,54 @@ def get_order(
             detail="Order not found"
         )
     
-    # Users can only view their own orders, admins can view all
-    if order.user_id != current_user.id and current_user.role != "admin":
+    # Check authorization
+    if order.user_id != str(current_user.id) and current_user.role not in ["admin", "owner"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to view this order"
         )
     
-    return order
+    # Convert to dict with proper ID serialization
+    order_dict = order.model_dump(by_alias=False)
+    order_dict["id"] = str(order.id)
+    if order.user_id:
+        order_dict["user_id"] = str(order.user_id)
+    if order.restaurant_id:
+        order_dict["restaurant_id"] = str(order.restaurant_id)
+    
+    return order_dict
 
 
 @router.patch("/{order_id}/status", response_model=OrderResponse)
-def update_order_status(
-    order_id: int,
-    status_data: OrderStatusUpdate,
-    session: Session = Depends(get_session),
+async def update_order_status(
+    order_id: str,
+    status_update: OrderStatusUpdate,
     current_user: User = Depends(get_current_user)
 ):
     """
-    Update order status (Admin or Delivery Agent only)
+    Update order status (Admin/Owner only)
     
     Args:
-        order_id: Order ID
-        status_data: New status
-        session: Database session
+        order_id: Order ID to update
+        status_update: New status
         current_user: Current authenticated user
     
     Returns:
         Updated order data
     """
-    # Check permissions
-    if current_user.role not in ["admin", "delivery"]:
+    if current_user.role not in ["admin", "owner"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins and delivery agents can update order status"
+            detail="Only admins and restaurant owners can update order status"
         )
     
-    order = session.get(Order, order_id)
+    try:
+        order = await Order.get(PydanticObjectId(order_id))
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Order not found"
+        )
     
     if not order:
         raise HTTPException(
@@ -203,39 +244,61 @@ def update_order_status(
             detail="Order not found"
         )
     
-    # Update status
-    order.status = status_data.status
+    order.status = status_update.status
     order.updated_at = datetime.utcnow()
     
-    session.add(order)
-    session.commit()
-    session.refresh(order)
+    await order.save()
     
-    return order
+    # Convert to dict with proper ID serialization
+    order_dict = order.model_dump(by_alias=False)
+    order_dict["id"] = str(order.id)
+    if order.user_id:
+        order_dict["user_id"] = str(order.user_id)
+    if order.restaurant_id:
+        order_dict["restaurant_id"] = str(order.restaurant_id)
+    
+    return order_dict
 
 
-@router.get("/all/admin", response_model=List[OrderResponse])
-def get_all_orders_admin(
-    session: Session = Depends(get_session),
+@router.delete("/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def cancel_order(
+    order_id: str,
     current_user: User = Depends(get_current_user)
 ):
     """
-    Get all orders (Admin only)
+    Cancel an order (Only if pending)
     
     Args:
-        session: Database session
+        order_id: Order ID to cancel
         current_user: Current authenticated user
-    
-    Returns:
-        List of all orders
     """
-    # Check admin role
-    if current_user.role != "admin":
+    try:
+        order = await Order.get(PydanticObjectId(order_id))
+    except Exception:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can view all orders"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Order not found"
         )
     
-    statement = select(Order).order_by(Order.created_at.desc())
-    orders = session.exec(statement).all()
-    return orders
+    if not order:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Order not found"
+        )
+    
+    # Check authorization
+    if order.user_id != str(current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to cancel this order"
+        )
+    
+    if order.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Can only cancel pending orders"
+        )
+    
+    order.status = "cancelled"
+    order.updated_at = datetime.utcnow()
+    await order.save()

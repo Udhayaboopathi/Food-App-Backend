@@ -2,27 +2,25 @@
 MenuItem model for food items
 Stores menu items with pricing and categories
 """
-from typing import Optional, List
-from sqlmodel import SQLModel, Field, Relationship
+from typing import Optional
+from beanie import Document
+from pydantic import Field
 from datetime import datetime
 
 
-class MenuItem(SQLModel, table=True):
+class MenuItem(Document):
     """Menu item model"""
     
-    __tablename__ = "menu_items"
-    
-    id: Optional[int] = Field(default=None, primary_key=True)
-    restaurant_id: int = Field(foreign_key="restaurants.id", index=True)
-    name: str = Field(max_length=200)
-    description: Optional[str] = Field(default=None, max_length=500)
+    restaurant_id: str  # MongoDB ObjectId as string
+    name: str
+    description: Optional[str] = None
     price: float = Field(ge=0)
-    category: str = Field(max_length=50)  # Appetizer, Main Course, Dessert, Beverage
-    image: Optional[str] = Field(default=None, max_length=500)  # Image URL
-    is_veg: bool = Field(default=True)
-    is_available: bool = Field(default=True)
+    category: str  # Appetizer, Main Course, Dessert, Beverage
+    image: Optional[str] = None  # Image URL
+    is_veg: bool = True
+    is_available: bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
     
-    # Relationships
-    restaurant: Optional["Restaurant"] = Relationship(back_populates="menu_items")
-    order_items: List["OrderItem"] = Relationship(back_populates="menu_item")
+    class Settings:
+        name = "menu_items"
+        indexes = ["restaurant_id"]

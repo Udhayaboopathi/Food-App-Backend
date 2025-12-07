@@ -3,7 +3,8 @@ Order models for order management
 Handles order tracking and order items
 """
 from typing import Optional, List
-from sqlmodel import SQLModel, Field, Relationship
+from beanie import Document
+from pydantic import Field, BaseModel
 from datetime import datetime
 from enum import Enum
 
@@ -18,40 +19,40 @@ class OrderStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class Order(SQLModel, table=True):
+class OrderItemData(BaseModel):
+    """Individual item in an order (embedded document)"""
+    menu_item_id: str
+    quantity: int = Field(ge=1)
+    price_at_purchase: float = Field(ge=0)
+
+
+class Order(Document):
     """Order model"""
     
-    __tablename__ = "orders"
-    
-    id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="users.id", index=True)
-    restaurant_id: int = Field(foreign_key="restaurants.id", index=True)
-    delivery_agent_id: Optional[int] = Field(default=None, foreign_key="delivery_agents.id")
+    user_id: str  # MongoDB ObjectId as string
+    restaurant_id: str  # MongoDB ObjectId as string
+    delivery_agent_id: Optional[str] = None  # MongoDB ObjectId as string
     total_amount: float = Field(ge=0)
-    delivery_address: str = Field(max_length=500)
-    status: str = Field(default=OrderStatus.PENDING, max_length=50)
-    payment_method: str = Field(default="cash", max_length=50)  # cash, card, upi
+    delivery_address: str
+    status: str = OrderStatus.PENDING
+    payment_method: str = "cash"  # cash, card, upi
+    items: List[OrderItemData] = []  # Embedded order items
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     
-    # Relationships
-    user: Optional["User"] = Relationship(back_populates="orders")
-    restaurant: Optional["Restaurant"] = Relationship(back_populates="orders")
-    delivery_agent: Optional["DeliveryAgent"] = Relationship(back_populates="orders")
-    order_items: List["OrderItem"] = Relationship(back_populates="order")
+    class Settings:
+        name = "orders"
+        indexes = ["user_id", "restaurant_id"]
 
 
-class OrderItem(SQLModel, table=True):
-    """Individual items in an order"""
+class OrderItem(Document):
+    """Individual items in an order (separate collection for compatibility)"""
     
-    __tablename__ = "order_items"
-    
-    id: Optional[int] = Field(default=None, primary_key=True)
-    order_id: int = Field(foreign_key="orders.id", index=True)
-    menu_item_id: int = Field(foreign_key="menu_items.id")
+    order_id: str  # MongoDB ObjectId as string
+    menu_item_id: str  # MongoDB ObjectId as string
     quantity: int = Field(ge=1)
-    price_at_purchase: float = Field(ge=0)  # Store price at time of order
+    price_at_purchase: float = Field(ge=0)
     
-    # Relationships
-    order: Optional["Order"] = Relationship(back_populates="order_items")
-    menu_item: Optional["MenuItem"] = Relationship(back_populates="order_items")
+    class Settings:
+        name = "order_items"
+        indexes = ["order_id"]

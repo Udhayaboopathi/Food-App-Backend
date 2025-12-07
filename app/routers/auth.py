@@ -4,10 +4,8 @@ Handles JWT token generation and user authentication
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from sqlmodel import Session, select
 from typing import Annotated
 
-from ..core.database import get_session
 from ..core.security import (
     verify_password,
     get_password_hash,
@@ -15,7 +13,7 @@ from ..core.security import (
     create_refresh_token,
     decode_token
 )
-from ..models import User
+from ..models.user import User
 from ..schemas.auth import UserLogin, UserRegister, UserResponse, Token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -24,8 +22,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
 async def get_current_user(
-    token: Annotated[str, Depends(oauth2_scheme)],
-    session: Session = Depends(get_session)
+    token: Annotated[str, Depends(oauth2_scheme)]
 ) -> User:
     """
     Dependency to get the current authenticated user
@@ -45,8 +42,7 @@ async def get_current_user(
     if email is None:
         raise credentials_exception
     
-    statement = select(User).where(User.email == email)
-    user = session.exec(statement).first()
+    user = await User.find_one(User.email == email)
     
     if user is None:
         raise credentials_exception
@@ -55,20 +51,18 @@ async def get_current_user(
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(user_data: UserRegister, session: Session = Depends(get_session)):
+async def register(user_data: UserRegister):
     """
     Register a new user account
     
     Args:
         user_data: User registration information
-        session: Database session
     
     Returns:
         Created user data
     """
     # Check if user already exists
-    statement = select(User).where(User.email == user_data.email)
-    existing_user = session.exec(statement).first()
+    existing_user = await User.find_one(User.email == user_data.email)
     
     if existing_user:
         raise HTTPException(
@@ -86,17 +80,20 @@ def register(user_data: UserRegister, session: Session = Depends(get_session)):
         address=user_data.address
     )
     
-    session.add(new_user)
-    session.commit()
-    session.refresh(new_user)
+    await new_user.insert()
     
-    return new_user
+    # Serialize response with string ID
+    user_dict = new_user.model_dump(by_alias=False)
+    user_dict["id"] = str(new_user.id)
+    if user_dict.get("restaurant_id"):
+        user_dict["restaurant_id"] = str(user_dict["restaurant_id"])
+    
+    return user_dict
 
 
 @router.post("/login", response_model=Token)
-def login(
-    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
-    session: Session = Depends(get_session)
+async def login(
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
 ):
     """
     Login with email and password
@@ -104,14 +101,12 @@ def login(
     
     Args:
         form_data: OAuth2 compatible form with username (email) and password
-        session: Database session
     
     Returns:
         JWT tokens
     """
     # Find user by email
-    statement = select(User).where(User.email == form_data.username)
-    user = session.exec(statement).first()
+    user = await User.find_one(User.email == form_data.username)
     
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
@@ -127,8 +122,8 @@ def login(
         )
     
     # Create tokens
-    access_token = create_access_token(data={"sub": user.email, "user_id": user.id})
-    refresh_token = create_refresh_token(data={"sub": user.email, "user_id": user.id})
+    access_token = create_access_token(data={"sub": user.email, "user_id": str(user.id)})
+    refresh_token = create_refresh_token(data={"sub": user.email, "user_id": str(user.id)})
     
     return {
         "access_token": access_token,
@@ -137,8 +132,8 @@ def login(
     }
 
 
-@router.get("/me", response_model=UserResponse)
-def get_current_user_info(current_user: User = Depends(get_current_user)):
+@router.get("/me")
+async def get_current_user_info(current_user: User = Depends(get_current_user)):
     """
     Get current authenticated user information
     
@@ -148,16 +143,19 @@ def get_current_user_info(current_user: User = Depends(get_current_user)):
     Returns:
         User data
     """
-    return current_user
+    # Convert Beanie Document to dict for proper JSON serialization
+    user_dict = current_user.model_dump(by_alias=False)
+    user_dict["id"] = str(current_user.id)
+    return user_dict
 
 
 @router.put("/users/{user_id}", response_model=UserResponse)
-def update_user_profile(
-    user_id: int,
+async def update_user_profile(
+    user_id: str,
     name: str | None = None,
     phone: str | None = None,
     address: str | None = None,
-    session: Session = Depends(get_session),
+    profile_image: str | None = None,
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -168,14 +166,14 @@ def update_user_profile(
         name: New name
         phone: New phone number
         address: New address
-        session: Database session
+        profile_image: Profile image URL
         current_user: Current authenticated user
     
     Returns:
         Updated user data
     """
     # Only allow users to update their own profile
-    if current_user.id != user_id:
+    if str(current_user.id) != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to update this profile"
@@ -188,20 +186,25 @@ def update_user_profile(
         current_user.phone = phone
     if address is not None:
         current_user.address = address
+    if profile_image is not None:
+        current_user.profile_image = profile_image
     
-    session.add(current_user)
-    session.commit()
-    session.refresh(current_user)
+    await current_user.save()
     
-    return current_user
+    # Serialize response with string ID
+    user_dict = current_user.model_dump(by_alias=False)
+    user_dict["id"] = str(current_user.id)
+    if user_dict.get("restaurant_id"):
+        user_dict["restaurant_id"] = str(user_dict["restaurant_id"])
+    
+    return user_dict
 
 
 @router.put("/users/{user_id}/password")
-def reset_password(
-    user_id: int,
+async def reset_password(
+    user_id: str,
     old_password: str,
     new_password: str,
-    session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -211,14 +214,13 @@ def reset_password(
         user_id: User ID to update password
         old_password: Current password for verification
         new_password: New password
-        session: Database session
         current_user: Current authenticated user
     
     Returns:
         Success message
     """
     # Only allow users to update their own password
-    if current_user.id != user_id:
+    if str(current_user.id) != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to update this password"
@@ -234,7 +236,6 @@ def reset_password(
     # Update password
     current_user.hashed_password = get_password_hash(new_password)
     
-    session.add(current_user)
-    session.commit()
+    await current_user.save()
     
-    return {"message": "Password updated successfully"}
+    return {"detail": "Password updated successfully"}

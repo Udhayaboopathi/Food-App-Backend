@@ -1,27 +1,71 @@
 """
 Database configuration and session management
-SQLModel setup for SQLite database
+MongoDB/Beanie setup
 """
-from sqlmodel import SQLModel, create_engine, Session
+from motor.motor_asyncio import AsyncIOMotorClient
+from beanie import init_beanie
 from .config import settings
+import asyncio
 
-# Create database engine
-engine = create_engine(
-    settings.DATABASE_URL,
-    connect_args={"check_same_thread": False},  # Needed for SQLite
-    echo=True  # Log SQL queries (disable in production)
-)
+# MongoDB client
+mongodb_client: AsyncIOMotorClient = None
 
 
+async def connect_to_mongo():
+    """Initialize MongoDB connection"""
+    global mongodb_client
+    
+    try:
+        # Create MongoDB client with connection settings
+        mongodb_client = AsyncIOMotorClient(
+            settings.MONGODB_URI,
+            serverSelectionTimeoutMS=5000,  # 5 second timeout
+            connectTimeoutMS=10000,
+            socketTimeoutMS=10000
+        )
+        
+        # Test the connection
+        await mongodb_client.admin.command('ping')
+        
+        # Import all models
+        from ..models.user import User
+        from ..models.restaurant import Restaurant
+        from ..models.menu_item import MenuItem
+        from ..models.order import Order
+        from ..models.review import Review
+        from ..models.delivery_agent import DeliveryAgent
+        
+        # Initialize beanie with all models
+        await init_beanie(
+            database=mongodb_client.eatupnow,
+            document_models=[
+                User,
+                Restaurant,
+                MenuItem,
+                Order,
+                Review,
+                DeliveryAgent
+            ]
+        )
+        print("✅ MongoDB connected successfully")
+        
+    except Exception as e:
+        print(f"❌ MongoDB connection failed: {e}")
+        print("⚠️  Please check your MONGODB_URI in .env file")
+        # Don't raise the exception to allow the app to start
+        # The app will work without MongoDB (some endpoints will fail)
+
+
+async def close_mongo_connection():
+    """Close MongoDB connection"""
+    global mongodb_client
+    if mongodb_client:
+        mongodb_client.close()
+        print("✅ MongoDB connection closed")
+
+
+# Compatibility function for old code
 def create_db_and_tables():
-    """Create all database tables"""
-    SQLModel.metadata.create_all(engine)
-
-
-def get_session():
-    """
-    Dependency for getting database sessions
-    Yields a session and ensures it's closed after use
-    """
-    with Session(engine) as session:
-        yield session
+    """Compatibility function - MongoDB doesn't need table creation"""
+    print("📊 Using MongoDB - no table creation needed")
+    pass

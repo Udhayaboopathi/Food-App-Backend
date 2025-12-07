@@ -18,7 +18,7 @@ class MenuItemBase(BaseModel):
 
 class MenuItemCreate(MenuItemBase):
     """Schema for creating a menu item"""
-    restaurant_id: int
+    restaurant_id: str
 
 
 class MenuItemCreateForOwner(MenuItemBase):
@@ -39,10 +39,11 @@ class MenuItemUpdate(BaseModel):
 
 class MenuItemResponse(MenuItemBase):
     """Menu item response with all fields"""
-    id: int
-    restaurant_id: int
+    id: str
+    restaurant_id: str
     is_available: bool
     created_at: datetime
     
     class Config:
         from_attributes = True
+        populate_by_name = True

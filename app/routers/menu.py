@@ -1,23 +1,23 @@
 """
-Menu router for menu item CRUD operations
+Menu router for menu item CRUD operations (MongoDB version)
 Handles menu item management and filtering
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlmodel import Session, select
 from typing import List, Optional
+from beanie import PydanticObjectId
 
-from ..core.database import get_session
-from ..models import MenuItem, User
+from ..models.menu_item import MenuItem
+from ..models.restaurant import Restaurant
+from ..models.user import User
 from ..schemas.menu_item import MenuItemCreate, MenuItemUpdate, MenuItemResponse
 from .auth import get_current_user
 
 router = APIRouter(prefix="/menu", tags=["Menu Items"])
 
 
-@router.get("/restaurant/{restaurant_id}", response_model=List[MenuItemResponse])
-def get_menu_items(
-    restaurant_id: int,
-    session: Session = Depends(get_session),
+@router.get("/restaurant/{restaurant_id}")
+async def get_menu_items(
+    restaurant_id: str,
     category: Optional[str] = Query(None),
     is_veg: Optional[bool] = Query(None),
     is_available: bool = Query(True)
@@ -27,7 +27,6 @@ def get_menu_items(
     
     Args:
         restaurant_id: Restaurant ID
-        session: Database session
         category: Filter by category
         is_veg: Filter vegetarian items
         is_available: Show only available items
@@ -35,33 +34,44 @@ def get_menu_items(
     Returns:
         List of menu items
     """
-    statement = select(MenuItem).where(MenuItem.restaurant_id == restaurant_id)
+    query = {"restaurant_id": restaurant_id, "is_available": is_available}
     
     if category:
-        statement = statement.where(MenuItem.category == category)
+        query["category"] = category
     
     if is_veg is not None:
-        statement = statement.where(MenuItem.is_veg == is_veg)
+        query["is_veg"] = is_veg
     
-    statement = statement.where(MenuItem.is_available == is_available)
+    menu_items = await MenuItem.find(query).to_list()
     
-    menu_items = session.exec(statement).all()
-    return menu_items
+    # Convert to dict with proper ID serialization
+    result = []
+    for item in menu_items:
+        item_dict = item.model_dump(by_alias=False)
+        item_dict["id"] = str(item.id)
+        result.append(item_dict)
+    
+    return result
 
 
 @router.get("/{item_id}", response_model=MenuItemResponse)
-def get_menu_item(item_id: int, session: Session = Depends(get_session)):
+async def get_menu_item(item_id: str):
     """
-    Get single menu item by ID
+    Get a single menu item by ID
     
     Args:
         item_id: Menu item ID
-        session: Database session
     
     Returns:
         Menu item data
     """
-    menu_item = session.get(MenuItem, item_id)
+    try:
+        menu_item = await MenuItem.get(PydanticObjectId(item_id))
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Menu item not found"
+        )
     
     if not menu_item:
         raise HTTPException(
@@ -69,109 +79,134 @@ def get_menu_item(item_id: int, session: Session = Depends(get_session)):
             detail="Menu item not found"
         )
     
-    return menu_item
+    # Convert to dict with proper ID serialization
+    item_dict = menu_item.model_dump(by_alias=False)
+    item_dict["id"] = str(menu_item.id)
+    if menu_item.restaurant_id:
+        item_dict["restaurant_id"] = str(menu_item.restaurant_id)
+    
+    return item_dict
 
 
 @router.post("", response_model=MenuItemResponse, status_code=status.HTTP_201_CREATED)
-def create_menu_item(
-    item_data: MenuItemCreate,
-    session: Session = Depends(get_session),
+async def create_menu_item(
+    menu_item_data: MenuItemCreate,
     current_user: User = Depends(get_current_user)
 ):
     """
-    Create a new menu item (Admin only)
+    Create a new menu item (Restaurant Owner/Admin only)
     
     Args:
-        item_data: Menu item information
-        session: Database session
+        menu_item_data: Menu item information
         current_user: Current authenticated user
     
     Returns:
         Created menu item data
     """
-    # Check admin role
-    if current_user.role != "admin":
+    # Check if restaurant exists
+    try:
+        restaurant = await Restaurant.get(PydanticObjectId(menu_item_data.restaurant_id))
+    except Exception:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can create menu items"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Restaurant not found"
         )
     
-    new_item = MenuItem(**item_data.model_dump())
-    session.add(new_item)
-    session.commit()
-    session.refresh(new_item)
+    if not restaurant:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Restaurant not found"
+        )
     
-    return new_item
+    # Check authorization
+    if current_user.role != "admin" and restaurant.owner_id != str(current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only restaurant owners and admins can add menu items"
+        )
+    
+    new_menu_item = MenuItem(**menu_item_data.dict())
+    await new_menu_item.insert()
+    
+    return new_menu_item
 
 
-@router.patch("/{item_id}", response_model=MenuItemResponse)
-def update_menu_item(
-    item_id: int,
-    item_data: MenuItemUpdate,
-    session: Session = Depends(get_session),
+@router.put("/{item_id}", response_model=MenuItemResponse)
+async def update_menu_item(
+    item_id: str,
+    menu_item_data: MenuItemUpdate,
     current_user: User = Depends(get_current_user)
 ):
     """
-    Update menu item (Admin only)
+    Update a menu item (Restaurant Owner/Admin only)
     
     Args:
-        item_id: Menu item ID
-        item_data: Updated menu item data
-        session: Database session
+        item_id: Menu item ID to update
+        menu_item_data: Updated menu item data
         current_user: Current authenticated user
     
     Returns:
         Updated menu item data
     """
-    # Check admin role
-    if current_user.role != "admin":
+    try:
+        menu_item = await MenuItem.get(PydanticObjectId(item_id))
+    except Exception:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can update menu items"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Menu item not found"
         )
-    
-    menu_item = session.get(MenuItem, item_id)
     
     if not menu_item:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Menu item not found"
+        )
+    
+    # Get restaurant to check ownership
+    restaurant = await Restaurant.get(PydanticObjectId(menu_item.restaurant_id))
+    
+    # Check authorization
+    if current_user.role != "admin" and restaurant.owner_id != str(current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to update this menu item"
         )
     
     # Update fields
-    update_data = item_data.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(menu_item, key, value)
+    update_data = menu_item_data.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(menu_item, field, value)
     
-    session.add(menu_item)
-    session.commit()
-    session.refresh(menu_item)
+    await menu_item.save()
     
-    return menu_item
+    # Convert to dict with proper ID serialization
+    item_dict = menu_item.model_dump(by_alias=False)
+    item_dict["id"] = str(menu_item.id)
+    if menu_item.restaurant_id:
+        item_dict["restaurant_id"] = str(menu_item.restaurant_id)
+    
+    return item_dict
 
 
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_menu_item(
-    item_id: int,
-    session: Session = Depends(get_session),
+async def delete_menu_item(
+    item_id: str,
     current_user: User = Depends(get_current_user)
 ):
     """
-    Delete a menu item (Admin only)
+    Delete a menu item (Restaurant Owner/Admin only)
     
     Args:
-        item_id: Menu item ID
-        session: Database session
+        item_id: Menu item ID to delete
         current_user: Current authenticated user
     """
-    # Check admin role
-    if current_user.role != "admin":
+    try:
+        menu_item = await MenuItem.get(PydanticObjectId(item_id))
+    except Exception:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can delete menu items"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Menu item not found"
         )
-    
-    menu_item = session.get(MenuItem, item_id)
     
     if not menu_item:
         raise HTTPException(
@@ -179,5 +214,14 @@ def delete_menu_item(
             detail="Menu item not found"
         )
     
-    session.delete(menu_item)
-    session.commit()
+    # Get restaurant to check ownership
+    restaurant = await Restaurant.get(PydanticObjectId(menu_item.restaurant_id))
+    
+    # Check authorization
+    if current_user.role != "admin" and restaurant.owner_id != str(current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to delete this menu item"
+        )
+    
+    await menu_item.delete()

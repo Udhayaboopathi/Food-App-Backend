@@ -10,31 +10,34 @@ from pathlib import Path
 import os
 
 from .core.config import settings
-from .core.database import create_db_and_tables
-from .routers import auth, restaurants, menu, orders, reviews, delivery, upload, owner, admin
+from .core.database import connect_to_mongo, close_mongo_connection
+from .routers import auth, restaurants, menu, orders, upload, admin, owner
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Lifespan event handler
-    Creates database tables on startup
+    Connects to MongoDB on startup
     """
     print("🚀 Starting EatUpNow API...")
     
-    # Only create database in non-serverless environments
+    # Connect to MongoDB
     if os.getenv("VERCEL") != "1":
-        create_db_and_tables()
+        await connect_to_mongo()
         
         # Create uploads directory
         uploads_dir = Path("uploads")
         uploads_dir.mkdir(exist_ok=True)
         print("📁 Uploads directory ready")
-        print("✅ Database initialized")
     else:
         print("⚡ Running in Vercel serverless mode")
+        await connect_to_mongo()
     
     yield
+    
+    # Close MongoDB connection
+    await close_mongo_connection()
     print("👋 Shutting down EatUpNow API")
 
 
@@ -62,15 +65,16 @@ app.include_router(auth.router)
 app.include_router(restaurants.router)
 app.include_router(menu.router)
 app.include_router(orders.router)
-app.include_router(reviews.router)
-app.include_router(delivery.router)
 app.include_router(upload.router)
-app.include_router(owner.router)
 app.include_router(admin.router)
+app.include_router(owner.router)
 
 # Mount static files for uploaded images (only in non-serverless mode)
 if os.getenv("VERCEL") != "1":
-    app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+    # Mount each upload subfolder
+    uploads_dir = Path("uploads")
+    if uploads_dir.exists():
+        app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
 @app.get("/")

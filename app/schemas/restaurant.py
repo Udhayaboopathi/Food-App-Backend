@@ -34,10 +34,11 @@ class RestaurantUpdate(BaseModel):
 
 class RestaurantResponse(RestaurantBase):
     """Restaurant response with all fields"""
-    id: int
+    id: str
     rating: float
     is_active: bool
     created_at: datetime
     
     class Config:
         from_attributes = True
+        populate_by_name = True

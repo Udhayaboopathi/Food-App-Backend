@@ -1,22 +1,21 @@
 """
-Restaurant router for restaurant CRUD operations
+Restaurant router for restaurant CRUD operations (MongoDB version)
 Handles restaurant discovery, search, and filtering
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlmodel import Session, select, col
 from typing import List, Optional
+from beanie import PydanticObjectId
 
-from ..core.database import get_session
-from ..models import Restaurant, User, MenuItem, Review, Order, OrderItem
+from ..models.restaurant import Restaurant
+from ..models.user import User
 from ..schemas.restaurant import RestaurantCreate, RestaurantUpdate, RestaurantResponse
 from .auth import get_current_user
 
 router = APIRouter(prefix="/restaurants", tags=["Restaurants"])
 
 
-@router.get("", response_model=List[RestaurantResponse])
-def get_restaurants(
-    session: Session = Depends(get_session),
+@router.get("")
+async def get_restaurants(
     city: Optional[str] = Query(None),
     cuisine: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
@@ -28,7 +27,6 @@ def get_restaurants(
     Get list of restaurants with optional filters
     
     Args:
-        session: Database session
         city: Filter by city
         cuisine: Filter by cuisine type
         search: Search in restaurant name
@@ -39,41 +37,51 @@ def get_restaurants(
     Returns:
         List of restaurants
     """
-    statement = select(Restaurant).where(Restaurant.is_active == True)
+    query = {"is_active": True}
     
     # Apply filters
     if city:
-        statement = statement.where(col(Restaurant.city).ilike(f"%{city}%"))
+        query["city"] = {"$regex": city, "$options": "i"}
     
     if cuisine:
-        statement = statement.where(col(Restaurant.cuisine).ilike(f"%{cuisine}%"))
+        query["cuisine"] = {"$regex": cuisine, "$options": "i"}
     
     if search:
-        statement = statement.where(col(Restaurant.name).ilike(f"%{search}%"))
+        query["name"] = {"$regex": search, "$options": "i"}
     
-    if min_rating:
-        statement = statement.where(Restaurant.rating >= min_rating)
+    if min_rating is not None:
+        query["rating"] = {"$gte": min_rating}
     
-    # Apply pagination
-    statement = statement.offset(skip).limit(limit)
+    restaurants = await Restaurant.find(query).skip(skip).limit(limit).to_list()
     
-    restaurants = session.exec(statement).all()
-    return restaurants
+    # Convert to dict with proper ID serialization
+    result = []
+    for restaurant in restaurants:
+        rest_dict = restaurant.model_dump(by_alias=False)
+        rest_dict["id"] = str(restaurant.id)
+        result.append(rest_dict)
+    
+    return result
 
 
-@router.get("/{restaurant_id}", response_model=RestaurantResponse)
-def get_restaurant(restaurant_id: int, session: Session = Depends(get_session)):
+@router.get("/{restaurant_id}")
+async def get_restaurant(restaurant_id: str):
     """
-    Get single restaurant by ID
+    Get a single restaurant by ID
     
     Args:
         restaurant_id: Restaurant ID
-        session: Database session
     
     Returns:
         Restaurant data
     """
-    restaurant = session.get(Restaurant, restaurant_id)
+    try:
+        restaurant = await Restaurant.get(PydanticObjectId(restaurant_id))
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Restaurant not found"
+        )
     
     if not restaurant:
         raise HTTPException(
@@ -81,68 +89,72 @@ def get_restaurant(restaurant_id: int, session: Session = Depends(get_session)):
             detail="Restaurant not found"
         )
     
-    return restaurant
+    # Convert to dict with proper ID serialization
+    rest_dict = restaurant.model_dump(by_alias=False)
+    rest_dict["id"] = str(restaurant.id)
+    return rest_dict
 
 
-@router.post("", response_model=RestaurantResponse, status_code=status.HTTP_201_CREATED)
-def create_restaurant(
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_restaurant(
     restaurant_data: RestaurantCreate,
-    session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Create a new restaurant (Admin only)
+    Create a new restaurant (Admin/Owner only)
     
     Args:
         restaurant_data: Restaurant information
-        session: Database session
         current_user: Current authenticated user
     
     Returns:
         Created restaurant data
     """
-    # Check admin role
-    if current_user.role != "admin":
+    if current_user.role not in ["admin", "owner"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can create restaurants"
+            detail="Only admins and owners can create restaurants"
         )
     
-    new_restaurant = Restaurant(**restaurant_data.model_dump())
-    session.add(new_restaurant)
-    session.commit()
-    session.refresh(new_restaurant)
+    new_restaurant = Restaurant(**restaurant_data.dict())
+    if current_user.role == "owner":
+        new_restaurant.owner_id = str(current_user.id)
     
-    return new_restaurant
+    await new_restaurant.insert()
+    
+    # Convert to dict with proper ID serialization
+    rest_dict = new_restaurant.model_dump(by_alias=False)
+    rest_dict["id"] = str(new_restaurant.id)
+    if new_restaurant.owner_id:
+        rest_dict["owner_id"] = str(new_restaurant.owner_id)
+    
+    return rest_dict
 
 
-@router.patch("/{restaurant_id}", response_model=RestaurantResponse)
-def update_restaurant(
-    restaurant_id: int,
+@router.put("/{restaurant_id}")
+async def update_restaurant(
+    restaurant_id: str,
     restaurant_data: RestaurantUpdate,
-    session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Update restaurant information (Admin only)
+    Update a restaurant (Admin or Restaurant Owner only)
     
     Args:
-        restaurant_id: Restaurant ID
+        restaurant_id: Restaurant ID to update
         restaurant_data: Updated restaurant data
-        session: Database session
         current_user: Current authenticated user
     
     Returns:
         Updated restaurant data
     """
-    # Check admin role
-    if current_user.role != "admin":
+    try:
+        restaurant = await Restaurant.get(PydanticObjectId(restaurant_id))
+    except Exception:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can update restaurants"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Restaurant not found"
         )
-    
-    restaurant = session.get(Restaurant, restaurant_id)
     
     if not restaurant:
         raise HTTPException(
@@ -150,40 +162,55 @@ def update_restaurant(
             detail="Restaurant not found"
         )
     
+    # Check authorization
+    if current_user.role != "admin" and restaurant.owner_id != str(current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to update this restaurant"
+        )
+    
     # Update fields
-    update_data = restaurant_data.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(restaurant, key, value)
+    update_data = restaurant_data.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(restaurant, field, value)
     
-    session.add(restaurant)
-    session.commit()
-    session.refresh(restaurant)
+    await restaurant.save()
     
-    return restaurant
+    # Convert to dict with proper ID serialization
+    rest_dict = restaurant.model_dump(by_alias=False)
+    rest_dict["id"] = str(restaurant.id)
+    if restaurant.owner_id:
+        rest_dict["owner_id"] = str(restaurant.owner_id)
+    
+    return rest_dict
 
 
 @router.delete("/{restaurant_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_restaurant(
-    restaurant_id: int,
-    session: Session = Depends(get_session),
+async def delete_restaurant(
+    restaurant_id: str,
     current_user: User = Depends(get_current_user)
 ):
     """
-    Delete a restaurant (Admin only)
+    Delete a restaurant with cascade (Admin only)
+    Deletes all related menu items, orders, and reviews
     
     Args:
-        restaurant_id: Restaurant ID
-        session: Database session
+        restaurant_id: Restaurant ID to delete
         current_user: Current authenticated user
     """
-    # Check admin role
     if current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can delete restaurants"
         )
     
-    restaurant = session.get(Restaurant, restaurant_id)
+    try:
+        restaurant = await Restaurant.get(PydanticObjectId(restaurant_id))
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Restaurant not found"
+        )
     
     if not restaurant:
         raise HTTPException(
@@ -191,36 +218,34 @@ def delete_restaurant(
             detail="Restaurant not found"
         )
     
+    # CASCADE DELETE - Delete all related data
+    from ..models.menu_item import MenuItem
+    from ..models.order import Order
+    from ..models.review import Review
     
-    # Delete all related data in the correct order
-    # 1. Delete order items from orders at this restaurant
-    orders_statement = select(Order).where(Order.restaurant_id == restaurant_id)
-    orders = session.exec(orders_statement).all()
+    # 1. Delete all menu items for this restaurant
+    menu_items = await MenuItem.find({"restaurant_id": restaurant_id}).to_list()
+    for item in menu_items:
+        await item.delete()
+    
+    # 2. Delete all orders for this restaurant
+    orders = await Order.find({"restaurant_id": restaurant_id}).to_list()
     for order in orders:
-        order_items_statement = select(OrderItem).where(OrderItem.order_id == order.id)
-        order_items = session.exec(order_items_statement).all()
-        for order_item in order_items:
-            session.delete(order_item)
+        await order.delete()
     
-    # 2. Delete orders
-    for order in orders:
-        session.delete(order)
-    
-    # 3. Delete reviews
-    reviews_statement = select(Review).where(Review.restaurant_id == restaurant_id)
-    reviews = session.exec(reviews_statement).all()
+    # 3. Delete all reviews for this restaurant
+    reviews = await Review.find({"restaurant_id": restaurant_id}).to_list()
     for review in reviews:
-        session.delete(review)
+        await review.delete()
     
-    # 4. Delete menu items
-    menu_items_statement = select(MenuItem).where(MenuItem.restaurant_id == restaurant_id)
-    menu_items = session.exec(menu_items_statement).all()
-    for menu_item in menu_items:
-        session.delete(menu_item)
+    # 4. Clear owner assignment if exists
+    if restaurant.owner_id:
+        owner = await User.get(PydanticObjectId(restaurant.owner_id))
+        if owner:
+            owner.restaurant_id = None
+            await owner.save()
     
-    # 5. Flush all deletes before removing the restaurant
-    session.flush()
+    # 5. Finally delete the restaurant
+    await restaurant.delete()
     
-    # 6. Finally delete the restaurant
-    session.delete(restaurant)
-    session.commit()
+    print(f"🗑️ Deleted restaurant '{restaurant.name}' and all related data (menu items, orders, reviews)")

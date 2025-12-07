@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # Database
-    DATABASE_URL: str = "sqlite:///./database.db"
+    MONGODB_URI: str = "mongodb+srv://udhaya:udhaya@udhaya.ibrprte.mongodb.net/eatupnow?retryWrites=true&w=majority"
     
     # CORS - Allow all origins for multiple app access
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000"]
