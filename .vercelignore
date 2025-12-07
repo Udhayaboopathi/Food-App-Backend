@@ -6,3 +6,9 @@ __pycache__/
 uploads/
 main.py
 README.md
+app/
+VERCEL_DEPLOYMENT.md
+VERCEL_FIX.md
+VERCEL_SETTINGS.md
+FINAL_FIX.md
+.env.example
